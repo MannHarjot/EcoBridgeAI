@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
     app.state.ws_manager = ws_manager
     app.state.supabase = supabase
     app.state.elevenlabs = elevenlabs
+    app.state.backboard = backboard
 
     logger.info("EchoBridge AI started (env=%s)", settings.ENVIRONMENT)
     yield
@@ -218,13 +219,19 @@ async def speak(request: SpeakRequest) -> Response:
 async def list_voices() -> dict:
     """List available ElevenLabs voices for the voice selector UI.
 
+    The first 5 voices are marked ``recommended: true`` so the frontend
+    can highlight the highest-quality options by default.
+
     Returns:
-        Dict with a ``voices`` list, or an empty list when ElevenLabs is not configured.
+        Dict with a ``voices`` list (each entry may include ``recommended``),
+        or an empty list when ElevenLabs is not configured.
     """
     elevenlabs = app.state.elevenlabs
     if not elevenlabs:
         return {"voices": []}
     voices = await elevenlabs.list_voices()
+    for i, voice in enumerate(voices):
+        voice["recommended"] = i < 5
     return {"voices": voices}
 
 
@@ -255,44 +262,115 @@ async def get_session(session_id: str) -> SessionState:
 
 @app.post("/api/session/{session_id}/recap", response_model=RecapCard)
 async def session_recap(session_id: str) -> RecapCard:
-    """Generate a recap card from session data.
+    """Generate an AI-powered recap card via Backboard.
+
+    When Backboard is configured the full conversation is sent to the
+    ``recap_generator`` assistant (claude-3-5-sonnet) which returns a
+    structured summary including topics, action items, and a note on how
+    effective the predictions were.  Falls back to a stats-only card when
+    Backboard is unavailable.
 
     Args:
         session_id: Session to summarise.
 
     Returns:
-        A RecapCard with basic stats derived from the session messages.
+        A RecapCard with AI summary and prediction accuracy stats.
 
     Raises:
         HTTPException 404 if the session does not exist.
     """
+    import json as _json
+    from datetime import datetime, timezone
+
     ws_manager: "ConnectionManager" = app.state.ws_manager
+    backboard = app.state.backboard
+    cloudinary = getattr(app.state, "cloudinary", None)
+
     session = ws_manager.session_states.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    from datetime import datetime, timezone
-
     now = datetime.now(timezone.utc)
     duration = int((now - session.created_at).total_seconds())
-
-    topics = list(
-        {m.intent.value for m in session.messages if m.intent} or {"general"}
-    )
-
     stats = session.learning_stats
-    total = stats.get("total_taps", 0)
-    top1 = stats.get("top_1_taps", 0)
-    accuracy = round(top1 / total, 3) if total else 0.0
+    total_taps = stats.get("total_taps", 0)
+    top1_taps = stats.get("top_1_taps", 0)
+    accuracy_pct = round((top1_taps / total_taps) * 100) if total_taps else 0
+    accuracy = round(top1_taps / total_taps, 3) if total_taps else 0.0
+
+    unique_contexts = list({
+        m.intent.value for m in session.messages if m.intent
+    } or {"general"})
+
+    # ── Backboard AI summary ──────────────────────────────────────────────────
+    summary = session.context_summary or f"Session with {len(session.messages)} messages."
+    topics: list[str] = unique_contexts
+    action_items: list[str] = []
+
+    if backboard and session.messages:
+        conv_lines = [
+            f"[{m.speaker}] {m.raw_text}"
+            for m in session.messages
+        ]
+        conversation_text = "\n".join(conv_lines)
+
+        prompt = (
+            "Summarize this accessibility communication session.\n\n"
+            f"Conversation:\n{conversation_text}\n\n"
+            f"Stats: {len(session.messages)} exchanges, "
+            f"prediction accuracy {accuracy_pct}%, "
+            f"context types detected: {', '.join(unique_contexts)}\n\n"
+            "Respond ONLY with this JSON (no markdown, no extra text):\n"
+            '{"summary":"2-3 sentences including how effective the AI predictions were",'
+            '"topics":["topic1"],'
+            '"action_items":["follow-up1"],'
+            '"key_moments":["important exchange 1"]}'
+        )
+
+        try:
+            bb_sid = stats.get("_backboard_session_id")
+            if not bb_sid:
+                bb_sid = await backboard.create_session(
+                    session.user_id or session_id
+                )
+            response_text = await backboard.send_message(
+                bb_sid, prompt, agent_name="recap_generator"
+            )
+            import re as _re
+            cleaned = _re.sub(r"```(?:json)?\s*", "", response_text).strip()
+            parsed = _json.loads(cleaned)
+            summary = parsed.get("summary", summary)
+            topics = parsed.get("topics", topics)
+            action_items = parsed.get("action_items", [])
+        except Exception as exc:
+            logger.warning("Recap Backboard call failed: %s", exc)
+
+    image_url: Optional[str] = None
+    if cloudinary:
+        try:
+            from models.schemas import RecapCard as _RC
+            tmp = _RC(
+                session_id=session_id,
+                summary=summary,
+                topics=topics,
+                action_items=action_items,
+                duration_seconds=duration,
+                turn_count=len(session.messages),
+                prediction_accuracy=accuracy,
+            )
+            image_url = await cloudinary.generate_recap_card(tmp)
+        except Exception as exc:
+            logger.warning("Cloudinary recap card failed: %s", exc)
 
     return RecapCard(
         session_id=session_id,
-        summary=session.context_summary or f"Session with {len(session.messages)} messages.",
+        summary=summary,
         topics=topics,
-        action_items=[],
+        action_items=action_items,
         duration_seconds=duration,
         turn_count=len(session.messages),
         prediction_accuracy=accuracy,
+        image_url=image_url,
     )
 
 
@@ -340,15 +418,16 @@ async def save_preferences(user_id: str, prefs: UserPreferences) -> UserPreferen
 
 @app.get("/api/session/{session_id}/stats")
 async def session_stats(session_id: str) -> dict:
-    """Return live prediction accuracy and latency stats for a session.
+    """Return live prediction accuracy and engagement stats for a session.
 
-    Useful on the judge demo screen to show the AI improving in real-time.
+    Judges can hit this endpoint during Q&A to see real-time AI performance.
 
     Args:
         session_id: Session to inspect.
 
     Returns:
-        Dict with prediction accuracy, tap breakdown, and context info.
+        Dict with prediction accuracy, context switches, streaming updates,
+        and other engagement metrics.
 
     Raises:
         HTTPException 404 if the session does not exist.
@@ -362,18 +441,88 @@ async def session_stats(session_id: str) -> dict:
     total = stats.get("total_taps", 0)
     top1 = stats.get("top_1_taps", 0)
     top3 = stats.get("top_3_taps", 0)
-    top5 = stats.get("top_5_taps", 0)
+
+    latency_total = stats.get("_total_latency_ms", 0)
+    latency_count = stats.get("_latency_count", 0)
+
+    # Contexts seen: stored by WS handler when context switches occur
+    contexts_seen: list[str] = list(stats.get("_contexts_seen", set()))
+    if session.detected_context.value not in contexts_seen:
+        contexts_seen.append(session.detected_context.value)
 
     return {
-        "session_id": session_id,
-        "total_taps": total,
-        "top_1_accuracy": round(top1 / total, 3) if total else 0.0,
-        "top_3_accuracy": round(top3 / total, 3) if total else 0.0,
-        "top_5_accuracy": round(top5 / total, 3) if total else 0.0,
-        "detected_context": session.detected_context.value,
-        "message_count": len(session.messages),
-        "raw_stats": stats,
+        "total_turns": len(session.messages),
+        "prediction_accuracy_top1": round(top1 / total, 3) if total else 0.0,
+        "prediction_accuracy_top3": round(top3 / total, 3) if total else 0.0,
+        "avg_response_time_ms": round(latency_total / latency_count, 1) if latency_count else 0.0,
+        "contexts_detected": contexts_seen,
+        "context_switches": stats.get("context_switches", 0),
+        "streaming_updates_sent": stats.get("streaming_updates_sent", 0),
+        "favourite_phrases_used": stats.get("favourite_phrases_used", 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Demo preload — warm up Backboard assistants before presenting
+# ---------------------------------------------------------------------------
+
+
+class PreloadRequest(BaseModel):
+    scenario: str = "medical"  # "medical" | "retail" | "emergency"
+
+
+@app.post("/api/demo/preload")
+async def demo_preload(body: PreloadRequest) -> dict:
+    """Pre-warm all Backboard assistants to eliminate cold-start latency.
+
+    Call this endpoint 30-60 seconds before the demo starts.  Each assistant
+    receives a short warm-up message so the first real user interaction is fast.
+
+    Args:
+        body: Contains ``scenario`` (medical | retail | emergency) used to
+              prime the prediction assistant with relevant context.
+
+    Returns:
+        ``{"status": "ready", "assistants_warmed": N}`` where N is the number
+        of assistants successfully pre-warmed.
+    """
+    backboard = app.state.backboard
+    if not backboard:
+        return {"status": "ready", "assistants_warmed": 0, "note": "Backboard not configured — running in stub mode"}
+
+    # Warm-up messages per assistant
+    scenario_hints = {
+        "medical": "doctor appointment pain medication",
+        "retail": "price buy purchase store",
+        "emergency": "help urgent call 911",
+    }
+    hint = scenario_hints.get(body.scenario, "general communication")
+
+    warm_up_tasks = [
+        ("router", f"Route input for {body.scenario} scenario."),
+        ("context_understanding", f"Simplify: '{hint}'"),
+        ("reply_prediction", f"Suggest replies for an AAC user in a {body.scenario} context."),
+        ("reply_prediction_fast", f"Quick replies for: '{hint}'"),
+        ("recap_generator", f"Ready to summarise a {body.scenario} session."),
+    ]
+
+    warmed = 0
+    # Create a throwaway Backboard session for warm-up
+    try:
+        warm_session_id = await backboard.create_session("_warmup_")
+    except Exception as exc:
+        logger.warning("Preload: could not create warm-up session: %s", exc)
+        return {"status": "degraded", "assistants_warmed": 0, "error": str(exc)}
+
+    for agent_name, message in warm_up_tasks:
+        try:
+            await backboard.send_message(warm_session_id, message, agent_name=agent_name)
+            warmed += 1
+            logger.info("[Preload] warmed assistant=%s scenario=%s", agent_name, body.scenario)
+        except Exception as exc:
+            logger.warning("[Preload] failed to warm assistant=%s: %s", agent_name, exc)
+
+    return {"status": "ready", "assistants_warmed": warmed}
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +660,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                         },
                     ),
                 )
+                # Track streaming updates count for stats endpoint
+                s = session.learning_stats
+                s["streaming_updates_sent"] = s.get("streaming_updates_sent", 0) + 1
                 continue
 
             # ── Normal pipeline ────────────────────────────────────────────
@@ -523,8 +675,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                     payload=result.model_dump(mode="json"),
                 ),
             )
+            # Track prediction latency for avg_response_time_ms
+            if result.prediction_latency_ms:
+                s = session.learning_stats
+                s["_total_latency_ms"] = s.get("_total_latency_ms", 0) + result.prediction_latency_ms
+                s["_latency_count"] = s.get("_latency_count", 0) + 1
             # Notify client if context auto-detection changed the domain
             if result.detected_context != prev_context:
+                s = session.learning_stats
+                s["context_switches"] = s.get("context_switches", 0) + 1
+                contexts: set = s.get("_contexts_seen", set())
+                contexts.add(result.detected_context.value)
+                s["_contexts_seen"] = contexts
                 await ws_manager.send_context_detected(session_id, result.detected_context)
             # Pacing alert if the other person is speaking too fast
             if result.pacing_alert:
