@@ -26,6 +26,7 @@ class InputType(str, Enum):
     TEXT_INPUT = "text_input"
     QUICK_TAP = "quick_tap"
     EMERGENCY_TAP = "emergency_tap"
+    PARTIAL_SPEECH = "partial_speech"  # streaming — frontend sends partials as heard
 
 
 class IntentType(str, Enum):
@@ -52,6 +53,21 @@ class OutputMode(str, Enum):
     VOICE_ONLY = "voice_only"
     TEXT_AND_VOICE = "text_and_voice"
     VISUAL_ONLY = "visual_only"
+
+
+class ConversationContext(str, Enum):
+    MEDICAL = "medical"
+    RETAIL = "retail"
+    EMERGENCY = "emergency"
+    CASUAL = "casual"
+    PROFESSIONAL = "professional"
+    UNKNOWN = "unknown"
+
+
+class PredictionConfidence(str, Enum):
+    SPECULATIVE = "speculative"  # early partial — low opacity tiles
+    LIKELY = "likely"            # mid-speech — medium opacity
+    CONFIDENT = "confident"      # full utterance — full opacity
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +101,7 @@ class PredictedReply(BaseModel):
     category: str
     confidence: float = 1.0
     is_favourite: bool = False
+    prediction_stage: PredictionConfidence = PredictionConfidence.CONFIDENT
 
 
 class SessionState(BaseModel):
@@ -94,10 +111,14 @@ class SessionState(BaseModel):
     user_id: Optional[str] = None
     mode: ImpairmentMode = ImpairmentMode.DUAL_IMPAIRMENT
     output_mode: OutputMode = OutputMode.TEXT_AND_VOICE
+    detected_context: ConversationContext = ConversationContext.UNKNOWN
     messages: list[TranscriptMessage] = Field(default_factory=list)
     context_summary: str = ""
     active: bool = True
     created_at: datetime = Field(default_factory=_utcnow)
+    learning_stats: dict = Field(
+        default_factory=dict
+    )  # tracks top-1 / top-5 / custom taps for accuracy
 
 
 class UserPreferences(BaseModel):
@@ -124,6 +145,7 @@ class PipelineInput(BaseModel):
     text_data: Optional[str] = None
     selected_reply_id: Optional[str] = None
     voice_id: Optional[str] = None
+    partial_transcript: Optional[str] = None  # streaming: frontend sends partial speech
 
 
 class PipelineOutput(BaseModel):
@@ -137,7 +159,11 @@ class PipelineOutput(BaseModel):
     voice_audio_url: Optional[str] = None
     mode: ImpairmentMode = ImpairmentMode.DUAL_IMPAIRMENT
     output_mode: OutputMode = OutputMode.TEXT_AND_VOICE
+    detected_context: ConversationContext = ConversationContext.UNKNOWN
     emergency_triggered: bool = False
+    is_partial: bool = False  # True when this is a streaming update from partial speech
+    prediction_latency_ms: int = 0  # tracked and shown during demo
+    pacing_alert: Optional[str] = None  # e.g. "The other person is speaking quickly."
 
 
 class EmergencyPayload(BaseModel):
@@ -157,11 +183,17 @@ class RecapCard(BaseModel):
     action_items: list[str] = Field(default_factory=list)
     duration_seconds: int = 0
     turn_count: int = 0
+    prediction_accuracy: float = 0.0  # % of turns where user tapped top-1 prediction
     image_url: Optional[str] = None
 
 
 class WebSocketMessage(BaseModel):
-    """Envelope for all WebSocket messages."""
+    """Envelope for all WebSocket messages.
+
+    Valid types: pipeline_result, partial_predictions, transcript_update,
+    voice_ready, session_start, session_end, session_restored,
+    pacing_alert, context_detected, emergency
+    """
 
     type: str
     payload: dict = Field(default_factory=dict)

@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import WebSocket
 
-from models.schemas import ImpairmentMode, OutputMode, SessionState, WebSocketMessage
+from models.schemas import ConversationContext, ImpairmentMode, OutputMode, PredictedReply, SessionState, WebSocketMessage
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class ConnectionManager:
             return
 
         try:
-            await websocket.send_json(message.model_dump())
+            await websocket.send_json(message.model_dump(mode="json"))
         except Exception as exc:
             logger.warning("Send failed for session %s (%s); removing connection", session_id, exc)
             self.active_connections.pop(session_id, None)
@@ -109,3 +109,52 @@ class ConnectionManager:
                 output_mode=OutputMode.TEXT_AND_VOICE,
             )
         return self.session_states[session_id]
+
+    async def send_partial(
+        self,
+        session_id: str,
+        predictions: list[PredictedReply],
+    ) -> None:
+        """Push streaming prediction tiles to the client during partial speech.
+
+        Called every STREAMING_PREDICTION_INTERVAL_MS while the other person
+        is still speaking.  Tiles are marked with their PredictionConfidence
+        stage so the frontend can render the correct opacity.
+
+        Args:
+            session_id: Target session identifier.
+            predictions: Current best-guess predictions from partial transcript.
+        """
+        await self.send(
+            session_id,
+            WebSocketMessage(
+                type="partial_predictions",
+                payload={
+                    "predictions": [p.model_dump(mode="json") for p in predictions],
+                    "is_partial": True,
+                },
+            ),
+        )
+
+    async def send_context_detected(
+        self,
+        session_id: str,
+        context: ConversationContext,
+    ) -> None:
+        """Notify the client that a conversation context has been auto-detected.
+
+        Triggers a UI update so the prediction tiles can re-rank themselves
+        for the detected domain (e.g. medical vocabulary rises to the top).
+
+        Args:
+            session_id: Target session identifier.
+            context: The detected ConversationContext.
+        """
+        await self.send(
+            session_id,
+            WebSocketMessage(
+                type="context_detected",
+                payload={"context": context.value},
+            ),
+        )
+
