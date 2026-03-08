@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 from agents.base import BaseAgent
-from models.schemas import ConversationContext, OutputMode, SessionState
+from models.schemas import ConversationContext, ImpairmentMode, OutputMode, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +86,22 @@ class RouterAgent(BaseAgent):
         if detected == ConversationContext.UNKNOWN and session.detected_context != ConversationContext.UNKNOWN:
             detected = session.detected_context
 
-        # quick_tap doesn't need prediction (user already picked a phrase)
-        run_predictions = input_type != "quick_tap"
-        # TTS only when session output mode includes voice
-        run_tts = session.output_mode in (OutputMode.VOICE_ONLY, OutputMode.TEXT_AND_VOICE)
+        # Predictions help the user reply to the OTHER person.
+        # Skip for: quick_tap (user already chose), user's own messages,
+        # and mic-commit messages where streaming predictions are already showing.
+        speaker = input_data.get("speaker", "other")
+        run_predictions = (
+            input_type != "quick_tap"
+            and speaker != "user"
+        )
+        # TTS only when user selects a prediction reply (quick_tap) — speaks it aloud to the other person.
+        # text_input messages are read visually by the other person; no TTS needed.
+        # Hearing-impaired users cannot benefit from TTS output (they can't hear it).
+        run_tts = (
+            input_type == "quick_tap"
+            and session.output_mode in (OutputMode.VOICE_ONLY, OutputMode.TEXT_AND_VOICE)
+            and session.mode != ImpairmentMode.HEARING_ONLY
+        )
         # Speech normalisation runs for all non-emergency, non-partial inputs
         run_speech = input_type in ("speech_audio", "text_input", "quick_tap")
 
@@ -101,6 +113,7 @@ class RouterAgent(BaseAgent):
                 "run_speech": run_speech,
                 "run_tts": run_tts,
                 "run_predictions": run_predictions,
+                "speaker": input_data.get("speaker", "other"),
             }
         )
         return input_data

@@ -72,6 +72,7 @@ export interface PipelineInput {
   selected_reply_id?: string;
   voice_id?: string;
   partial_transcript?: string;
+  speaker?: 'user' | 'other';
 }
 
 export interface PipelineOutput {
@@ -104,6 +105,7 @@ export interface EmergencyPayload {
 export interface UserPreferences {
   user_id: string;
   preferred_mode?: ImpairmentMode;
+  output_mode?: OutputMode;
   voice_id: string;
   favourite_phrases: Array<{ text: string; category: string }>;
   emergency_info: Record<string, unknown>;

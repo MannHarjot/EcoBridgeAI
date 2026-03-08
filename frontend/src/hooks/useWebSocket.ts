@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ConversationContext,
   ImpairmentMode,
+  OutputMode,
   PredictedReply,
   TranscriptMessage,
 } from '@/lib/types';
@@ -31,15 +32,25 @@ export interface UseWebSocketReturn {
   pacingAlert: string | null;
   emergencyActive: boolean;
   latencyMs: number;
-  sendMessage: (text: string) => void;
+  voiceAudioUrl: string | null;
+  sendMessage: (text: string, speaker?: 'user' | 'other') => void;
   sendPartialTranscript: (partial: string) => void;
   sendTap: (replyId: string) => void;
   sendEmergency: () => void;
+  clearEmergency: () => void;
+  commitStreamingPredictions: () => void;
+  addOptimisticMessage: (text: string, speaker: 'user' | 'other') => void;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────
 
-export function useWebSocket(sessionId: string): UseWebSocketReturn {
+interface SessionPreferences {
+  preferred_mode?: ImpairmentMode;
+  output_mode?: OutputMode;
+  voice_id?: string;
+}
+
+export function useWebSocket(sessionId: string, preferences?: SessionPreferences): UseWebSocketReturn {
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [predictions, setPredictions] = useState<PredictedReply[]>([]);
@@ -49,12 +60,15 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
   const [pacingAlert, setPacingAlert] = useState<string | null>(null);
   const [emergencyActive, setEmergencyActive] = useState(false);
   const [latencyMs, setLatencyMs] = useState(0);
+  const [voiceAudioUrl, setVoiceAudioUrl] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const pacingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -89,13 +103,36 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
             const p = msg.payload;
             if (p.mode) setCurrentMode(p.mode as ImpairmentMode);
             if (p.detected_context) setDetectedContext(p.detected_context as ConversationContext);
+            // Apply user's saved preferences to the backend session
+            const prefs = preferencesRef.current;
+            if (prefs?.preferred_mode || prefs?.output_mode) {
+              const mode = prefs.preferred_mode ?? 'dual_impairment';
+              ws.send(JSON.stringify({
+                type: 'configure',
+                mode,
+                output_mode: prefs.output_mode ?? 'text_and_voice',
+              }));
+              setCurrentMode(mode);
+            }
             break;
           }
 
           case 'pipeline_result': {
             const p = msg.payload as Record<string, unknown>;
             if (p.transcript) {
-              setMessages((prev) => [...prev, p.transcript as TranscriptMessage]);
+              const incoming = p.transcript as TranscriptMessage;
+              setMessages((prev) => {
+                // Replace any optimistic placeholder for this speaker; add if none
+                const idx = prev.findLastIndex(
+                  (m) => (m.id as string).startsWith('_opt_') && m.speaker === incoming.speaker,
+                );
+                if (idx !== -1) {
+                  const next = [...prev];
+                  next[idx] = incoming;
+                  return next;
+                }
+                return [...prev, incoming];
+              });
             }
             if (Array.isArray(p.predictions)) {
               setPredictions(p.predictions as PredictedReply[]);
@@ -108,6 +145,9 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
               setPacingAlert(p.pacing_alert as string);
               if (pacingTimerRef.current) clearTimeout(pacingTimerRef.current);
               pacingTimerRef.current = setTimeout(() => setPacingAlert(null), 5000);
+            }
+            if (typeof p.voice_audio_url === 'string' && p.voice_audio_url) {
+              setVoiceAudioUrl(p.voice_audio_url);
             }
             break;
           }
@@ -148,7 +188,8 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
             break;
           }
 
-          case 'emergency': {
+          case 'emergency':
+          case 'emergency_triggered': {
             setEmergencyActive(true);
             break;
           }
@@ -195,9 +236,19 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     }
   }, []);
 
+  // Re-apply preferences whenever they change mid-session (e.g. user changes output mode in Settings)
+  const prefMode = preferences?.preferred_mode;
+  const prefOutputMode = preferences?.output_mode;
+  useEffect(() => {
+    if (!connected || (!prefMode && !prefOutputMode)) return;
+    const mode = prefMode ?? 'dual_impairment';
+    send({ type: 'configure', mode, output_mode: prefOutputMode ?? 'text_and_voice' });
+    setCurrentMode(mode);
+  }, [prefMode, prefOutputMode, connected, send]);
+
   const sendMessage = useCallback(
-    (text: string) => {
-      send({ session_id: sessionId, input_type: 'text_input', text_data: text });
+    (text: string, speaker: 'user' | 'other' = 'user') => {
+      send({ session_id: sessionId, input_type: 'text_input', text_data: text, speaker });
     },
     [send, sessionId],
   );
@@ -211,7 +262,8 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
 
   const sendTap = useCallback(
     (replyId: string) => {
-      send({ session_id: sessionId, input_type: 'quick_tap', selected_reply_id: replyId });
+      const voice_id = preferencesRef.current?.voice_id;
+      send({ session_id: sessionId, input_type: 'quick_tap', selected_reply_id: replyId, speaker: 'user', ...(voice_id ? { voice_id } : {}) });
     },
     [send, sessionId],
   );
@@ -219,6 +271,34 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
   const sendEmergency = useCallback(() => {
     send({ session_id: sessionId, input_type: 'emergency_tap' });
   }, [send, sessionId]);
+
+  const clearEmergency = useCallback(() => {
+    setEmergencyActive(false);
+  }, []);
+
+  // Instantly promote streaming (partial) predictions to final so tiles lock in
+  // the moment speech ends — the full pipeline then upgrades them in the background.
+  const commitStreamingPredictions = useCallback(() => {
+    setPartialPredictions((prev) => {
+      if (prev.length > 0) setPredictions(prev);
+      return [];
+    });
+  }, []);
+
+  // Add a message immediately to the chat without waiting for the pipeline.
+  // The pipeline_result handler will replace it with the enriched version.
+  const addOptimisticMessage = useCallback((text: string, speaker: 'user' | 'other') => {
+    const msg: TranscriptMessage = {
+      id: `_opt_${Date.now()}`,
+      speaker,
+      raw_text: text,
+      simplified_text: text,
+      confidence: 1.0,
+      language: 'en',
+      timestamp: new Date().toISOString() as unknown as TranscriptMessage['timestamp'],
+    };
+    setMessages((prev) => [...prev, msg]);
+  }, []);
 
   return {
     connected,
@@ -230,9 +310,13 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     pacingAlert,
     emergencyActive,
     latencyMs,
+    voiceAudioUrl,
     sendMessage,
     sendPartialTranscript,
     sendTap,
     sendEmergency,
+    clearEmergency,
+    commitStreamingPredictions,
+    addOptimisticMessage,
   };
 }

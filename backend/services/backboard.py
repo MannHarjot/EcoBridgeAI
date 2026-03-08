@@ -7,14 +7,13 @@ so subsequent calls hit the same fine-tuned context.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 import httpx
 
 logger = logging.getLogger(__name__)
-
-BASE_URL = "https://api.backboard.io/v1"
 
 # ---------------------------------------------------------------------------
 # Assistant registry — one entry per pipeline role
@@ -97,24 +96,25 @@ class BackboardClient:
     cached for the lifetime of this client.
     """
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, base_url: str = "https://app.backboard.io/api") -> None:
         headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+            "X-API-Key": api_key,
         }
         self._client = httpx.AsyncClient(
-            base_url=BASE_URL,
+            base_url=base_url.rstrip("/"),
             headers=headers,
             timeout=30.0,
         )
         # Separate client with tight timeout for streaming fast-path calls
         self._fast_client = httpx.AsyncClient(
-            base_url=BASE_URL,
+            base_url=base_url.rstrip("/"),
             headers=headers,
             timeout=httpx.Timeout(connect=5.0, read=2.0, write=2.0, pool=5.0),
         )
         # assistant_name → Backboard assistant_id
         self._assistant_ids: dict[str, str] = {}
+        # (session_id, assistant_name) → Backboard thread_id
+        self._thread_ids: dict[tuple[str, str], str] = {}
 
     # ── Assistant management ─────────────────────────────────────────────────
 
@@ -159,28 +159,38 @@ class BackboardClient:
     # ── Session ──────────────────────────────────────────────────────────────
 
     async def create_session(self, user_id: str) -> str:
-        """Create a new Backboard session for a user.
+        """Compatibility shim.
 
-        Args:
-            user_id: Unique identifier for the user.
-
-        Returns:
-            The Backboard-issued session ID string.
+        Legacy pipeline code expects a "session id" for Backboard calls.
+        The current Backboard API is thread-based, so this returns the same
+        user/session token and threads are created lazily per assistant.
         """
+        return user_id
+
+    async def _ensure_thread(self, session_id: str, agent_name: str) -> str:
+        key = (session_id, agent_name)
+        cached = self._thread_ids.get(key)
+        if cached:
+            return cached
+
+        assistant_id = await self.ensure_assistant(agent_name)
         start = time.perf_counter()
         response = await self._client.post(
-            "/sessions",
-            json={"user_id": user_id},
+            f"/assistants/{assistant_id}/threads",
         )
         response.raise_for_status()
-        session_id: str = response.json()["session_id"]
+        body = response.json()
+        thread_id = body.get("thread_id") or body.get("id")
+        if not thread_id:
+            raise RuntimeError("Backboard thread creation response missing thread_id")
+        self._thread_ids[key] = thread_id
         logger.info(
-            "[Backboard] create_session | user=%s | %.3fs | bb_session=%s",
-            user_id,
+            "[Backboard] ensure_thread | agent=%s | %.3fs | thread=%s",
+            agent_name,
             time.perf_counter() - start,
-            session_id[:12] + "...",
+            str(thread_id)[:12] + "...",
         )
-        return session_id
+        return str(thread_id)
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -204,17 +214,42 @@ class BackboardClient:
         cfg = ASSISTANTS.get(agent_name, ASSISTANTS["reply_prediction"])
         start = time.perf_counter()
 
-        assistant_id = await self.ensure_assistant(agent_name)
-        response = await self._client.post(
-            f"/sessions/{session_id}/messages",
-            json={
-                "message": message,
-                "agent": agent_name,
-                "assistant_id": assistant_id,
-            },
-        )
+        thread_id = await self._ensure_thread(session_id, agent_name)
+        response = None
+        for attempt in range(3):
+            response = await self._client.post(
+                f"/threads/{thread_id}/messages",
+                files={"content": (None, message)},
+            )
+            if response.status_code < 500:
+                break
+            logger.warning(
+                "[Backboard] send_message retry | agent=%s attempt=%d status=%s body=%s",
+                agent_name,
+                attempt + 1,
+                response.status_code,
+                response.text[:300],
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (attempt + 1))
+
+        if response is None:
+            raise RuntimeError("Backboard send_message failed without response")
+        if response.status_code >= 400:
+            logger.warning(
+                "[Backboard] send_message error | agent=%s status=%s body=%s",
+                agent_name,
+                response.status_code,
+                response.text[:500],
+            )
         response.raise_for_status()
-        result: str = response.json()["response"]
+        payload = response.json()
+        result: str = (
+            payload.get("response")
+            or payload.get("content")
+            or payload.get("message")
+            or ""
+        )
 
         elapsed = time.perf_counter() - start
         logger.info(
@@ -252,18 +287,36 @@ class BackboardClient:
         start = time.perf_counter()
 
         try:
-            assistant_id = await self.ensure_assistant(fast_agent)
-            response = await self._fast_client.post(
-                f"/sessions/{session_id}/messages",
-                json={
-                    "message": message,
-                    "agent": fast_agent,
-                    "assistant_id": assistant_id,
-                },
-            )
+            thread_id = await self._ensure_thread(session_id, fast_agent)
+            response = None
+            for attempt in range(2):
+                response = await self._fast_client.post(
+                    f"/threads/{thread_id}/messages",
+                    files={"content": (None, message)},
+                )
+                if response.status_code < 500:
+                    break
+                if attempt < 1:
+                    await asyncio.sleep(0.15)
+
             elapsed = time.perf_counter() - start
+            if response is None:
+                return ""
+            if response.status_code >= 400:
+                logger.warning(
+                    "[Backboard] send_message_fast error | agent=%s status=%s body=%s",
+                    fast_agent,
+                    response.status_code,
+                    response.text[:500],
+                )
             response.raise_for_status()
-            result: str = response.json()["response"]
+            payload = response.json()
+            result: str = (
+                payload.get("response")
+                or payload.get("content")
+                or payload.get("message")
+                or ""
+            )
 
             if elapsed > 1.5:
                 logger.info(

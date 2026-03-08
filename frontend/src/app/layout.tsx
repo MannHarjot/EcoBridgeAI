@@ -37,7 +37,9 @@ export default function RootLayout({
       </head>
       <body className="h-full bg-navy text-warm-white antialiased">
         <SessionProvider>
-          {children}
+          <div className="h-full flex flex-col">
+            {children}
+          </div>
         </SessionProvider>
       </body>
     </html>

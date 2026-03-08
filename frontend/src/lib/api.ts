@@ -91,7 +91,8 @@ export async function savePreferences(
 // ── Voices ────────────────────────────────────────────────────────────────
 
 export async function getVoices(): Promise<Voice[]> {
-  return request<Voice[]>('/api/voices');
+  const data = await request<{ voices: Voice[] }>('/api/voices');
+  return data.voices ?? [];
 }
 
 // ── Emergency ─────────────────────────────────────────────────────────────

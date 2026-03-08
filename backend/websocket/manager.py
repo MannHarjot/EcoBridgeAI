@@ -48,6 +48,9 @@ class ConnectionManager:
                         "session_id": session_id,
                         "message_count": len(session.messages),
                         "context_summary": session.context_summary,
+                        "mode": session.mode.value,
+                        "output_mode": session.output_mode.value,
+                        "detected_context": session.detected_context.value,
                     },
                 ),
             )

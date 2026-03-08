@@ -26,7 +26,7 @@ You are a communication assistant helping someone with a speech or hearing impai
 Analyse the conversation and return a JSON object with these exact keys:
 {
   "simplified_text": "<rewrite in short, clear sentences of ≤12 words each>",
-  "intent": "<one of: QUESTION, REQUEST, CONFIRMATION, GREETING, FAREWELL, STATEMENT, COMPLAINT, EMERGENCY>",
+  "intent": "<one of: QUESTION, REQUEST, CONFIRMATION, GREETING, FAREWELL, INFORMATION, HELP, URGENCY, SCHEDULING>",
   "urgency": "<one of: LOW, MEDIUM, HIGH, EMERGENCY>",
   "context_note": "<one sentence describing the conversation topic>",
   "detected_context": "<one of: MEDICAL, RETAIL, EMERGENCY, CASUAL, PROFESSIONAL, UNKNOWN>"

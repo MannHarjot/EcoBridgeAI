@@ -40,7 +40,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <main className="flex flex-col min-h-screen bg-navy">
+    <main className="flex flex-col flex-1 min-h-0 bg-navy">
       {/* Header */}
       <header className="flex items-center gap-4 px-4 py-4 border-b border-slate-700/50 bg-slate-900/80 sticky top-0 z-10">
         <Link
@@ -69,7 +69,7 @@ export default function SettingsPage() {
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-8 max-w-lg mx-auto w-full">
+      <div className="flex-1 overflow-y-auto px-4 py-6 pb-16 space-y-8 max-w-lg mx-auto w-full">
 
         {/* Impairment mode */}
         <section className="space-y-3">
@@ -111,11 +111,13 @@ export default function SettingsPage() {
             {OUTPUT_MODES.map((om) => (
               <button
                 key={om.value}
-                onClick={() => updatePreferences({})}
+                onClick={() => updatePreferences({ output_mode: om.value })}
                 className={[
                   'min-h-[56px] px-3 py-3 rounded-2xl border text-lg font-medium',
                   'transition-all active:scale-[0.98]',
-                  'bg-slate-800/60 border-slate-700/40 text-slate-300 hover:border-slate-600',
+                  (preferences.output_mode ?? 'text_and_voice') === om.value
+                    ? 'bg-indigo-600/20 border-indigo-500/60 text-warm-white'
+                    : 'bg-slate-800/60 border-slate-700/40 text-slate-300 hover:border-slate-600',
                 ].join(' ')}
               >
                 {om.label}

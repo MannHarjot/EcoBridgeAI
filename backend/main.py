@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from contextlib import asynccontextmanager
@@ -16,7 +17,9 @@ from pydantic import BaseModel
 from config import settings
 from models.schemas import (
     EmergencyPayload,
+    ImpairmentMode,
     InputType,
+    OutputMode,
     PipelineInput,
     PipelineOutput,
     RecapCard,
@@ -64,9 +67,27 @@ async def lifespan(app: FastAPI):
     from websocket.manager import ConnectionManager
 
     # ── Service clients (None when API keys are absent) ──────────────────────
-    elevenlabs = ElevenLabsClient(settings.ELEVENLABS_API_KEY) if settings.ELEVENLABS_API_KEY else None
-    google_stt = GoogleSTTClient(settings.GOOGLE_CLOUD_PROJECT_ID, settings.GOOGLE_APPLICATION_CREDENTIALS) if settings.GOOGLE_CLOUD_PROJECT_ID else None
-    backboard = BackboardClient(settings.BACKBOARD_API_KEY) if settings.BACKBOARD_API_KEY else None
+    elevenlabs = (
+        ElevenLabsClient(
+            settings.ELEVENLABS_API_KEY,
+            model_id=settings.ELEVENLABS_MODEL_ID,
+        )
+        if settings.ELEVENLABS_API_KEY
+        else None
+    )
+    google_stt = (
+        GoogleSTTClient(settings.GOOGLE_CLOUD_PROJECT_ID, settings.GOOGLE_APPLICATION_CREDENTIALS)
+        if settings.GOOGLE_CLOUD_PROJECT_ID and settings.GOOGLE_APPLICATION_CREDENTIALS
+        else None
+    )
+    backboard = (
+        BackboardClient(
+            settings.BACKBOARD_API_KEY,
+            base_url=settings.BACKBOARD_BASE_URL,
+        )
+        if settings.BACKBOARD_API_KEY
+        else None
+    )
     cloudinary = (
         CloudinaryClient(
             settings.CLOUDINARY_CLOUD_NAME,
@@ -93,6 +114,7 @@ async def lifespan(app: FastAPI):
     app.state.supabase = supabase
     app.state.elevenlabs = elevenlabs
     app.state.backboard = backboard
+    app.state.cloudinary = cloudinary
 
     logger.info("EchoBridge AI started (env=%s)", settings.ENVIRONMENT)
     yield
@@ -206,7 +228,11 @@ async def speak(request: SpeakRequest) -> Response:
     elevenlabs = app.state.elevenlabs
     if not elevenlabs:
         raise HTTPException(status_code=503, detail="ElevenLabs TTS not configured")
-    audio_bytes = await elevenlabs.text_to_speech(request.text, request.voice_id)
+    try:
+        audio_bytes = await elevenlabs.text_to_speech(request.text, request.voice_id)
+    except Exception as exc:
+        logger.warning("ElevenLabs TTS request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="ElevenLabs TTS request failed")
     return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
@@ -229,10 +255,20 @@ async def list_voices() -> dict:
     elevenlabs = app.state.elevenlabs
     if not elevenlabs:
         return {"voices": []}
-    voices = await elevenlabs.list_voices()
-    for i, voice in enumerate(voices):
-        voice["recommended"] = i < 5
-    return {"voices": voices}
+    try:
+        voices = await elevenlabs.list_voices()
+    except Exception as exc:
+        logger.warning("ElevenLabs list_voices failed: %s", exc)
+        return {
+            "voices": [],
+            "error": "ElevenLabs key missing 'voices_read' permission or is invalid.",
+        }
+    # Keep only premade/professional voices; cap to 5
+    premade = [v for v in voices if v.get("category") in ("premade", "professional")]
+    filtered = premade[:5] if premade else voices[:5]
+    for voice in filtered:
+        voice["recommended"] = True
+    return {"voices": filtered}
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +395,11 @@ async def session_recap(session_id: str) -> RecapCard:
                 prediction_accuracy=accuracy,
             )
             image_url = await cloudinary.generate_recap_card(tmp)
+            logger.info("Cloudinary recap URL generated for session=%s", session_id)
         except Exception as exc:
             logger.warning("Cloudinary recap card failed: %s", exc)
+    else:
+        logger.info("Cloudinary client unavailable; skipping recap card generation")
 
     return RecapCard(
         session_id=session_id,
@@ -575,6 +614,96 @@ async def trigger_emergency(session_id: str) -> EmergencyPayload:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket helpers
+# ---------------------------------------------------------------------------
+
+_logger = logging.getLogger(__name__)
+
+
+async def _process_and_send(
+    orchestrator: "PipelineOrchestrator",
+    ws_manager: "ConnectionManager",
+    session: SessionState,
+    session_id: str,
+    pipeline_input: PipelineInput,
+) -> None:
+    """Run the full pipeline and push the result over WebSocket.
+
+    Runs as an asyncio.create_task so the WS receive loop is not blocked.
+    """
+    prev_context = session.detected_context
+    try:
+        result: PipelineOutput = await orchestrator.process(pipeline_input, session)
+    except Exception as exc:
+        _logger.warning("Pipeline task error session=%s: %s", session_id, exc)
+        return
+
+    await ws_manager.send(
+        session_id,
+        WebSocketMessage(type="pipeline_result", payload=result.model_dump(mode="json")),
+    )
+    if result.prediction_latency_ms:
+        s = session.learning_stats
+        s["_total_latency_ms"] = s.get("_total_latency_ms", 0) + result.prediction_latency_ms
+        s["_latency_count"] = s.get("_latency_count", 0) + 1
+    if result.detected_context != prev_context:
+        s = session.learning_stats
+        s["context_switches"] = s.get("context_switches", 0) + 1
+        contexts: set = s.get("_contexts_seen", set())
+        contexts.add(result.detected_context.value)
+        s["_contexts_seen"] = contexts
+        await ws_manager.send_context_detected(session_id, result.detected_context)
+    if result.pacing_alert:
+        await ws_manager.send(
+            session_id,
+            WebSocketMessage(type="pacing_alert", payload={"message": result.pacing_alert}),
+        )
+
+
+async def _process_partial_and_send(
+    orchestrator: "PipelineOrchestrator",
+    ws_manager: "ConnectionManager",
+    session: SessionState,
+    session_id: str,
+    partial_text: str,
+) -> None:
+    """Run process_partial and push partial_predictions over WebSocket.
+
+    Drops stale results: if a newer partial has been queued since this task
+    started, the result is discarded so the frontend only sees the latest.
+    """
+    stats = session.learning_stats
+    # Record the text we're about to process; if it changes before we finish,
+    # another task is processing a newer partial — discard our result.
+    stats["_processing_partial"] = partial_text
+    try:
+        result: PipelineOutput = await orchestrator.process_partial(partial_text, session)
+    except Exception as exc:
+        _logger.warning("Partial pipeline error session=%s: %s", session_id, exc)
+        return
+
+    # Drop if superseded by a newer partial
+    if stats.get("_processing_partial") != partial_text:
+        return
+
+    await ws_manager.send(
+        session_id,
+        WebSocketMessage(
+            type="partial_predictions",
+            payload={
+                "predictions": [p.model_dump(mode="json") for p in result.predictions],
+                "is_partial": True,
+                "prediction_latency_ms": result.prediction_latency_ms,
+            },
+        ),
+    )
+    stats["streaming_updates_sent"] = stats.get("streaming_updates_sent", 0) + 1
+    if result.prediction_latency_ms:
+        stats["_total_latency_ms"] = stats.get("_total_latency_ms", 0) + result.prediction_latency_ms
+        stats["_latency_count"] = stats.get("_latency_count", 0) + 1
+
+
+# ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
 
@@ -607,6 +736,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
     try:
         while True:
             raw = await websocket.receive_json()
+
+            # ── Configure: update session modes from user preferences ───────
+            if raw.get("type") == "configure":
+                raw_mode = str(raw.get("mode", "")).lower()
+                raw_output = str(raw.get("output_mode", "")).lower()
+                try:
+                    session.mode = ImpairmentMode(raw_mode)
+                except ValueError:
+                    pass
+                try:
+                    session.output_mode = OutputMode(raw_output)
+                except ValueError:
+                    pass
+                logger.debug(
+                    "Session configured: session=%s mode=%s output_mode=%s",
+                    session_id, session.mode, session.output_mode,
+                )
+                continue
+
             pipeline_input = PipelineInput(**_normalize_input(raw))
 
             # ── Emergency short-circuit via WebSocket ──────────────────────
@@ -645,58 +793,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                 )
                 continue
 
-            # ── Streaming partial-speech predictions ───────────────────────
-            # orchestrator.process() routes PARTIAL_SPEECH → process_partial internally
+            # ── Streaming partial-speech predictions (non-blocking) ────────
             if pipeline_input.input_type == InputType.PARTIAL_SPEECH:
-                result = await orchestrator.process(pipeline_input, session)
-                await ws_manager.send(
-                    session_id,
-                    WebSocketMessage(
-                        type="partial_predictions",
-                        payload={
-                            "predictions": [p.model_dump(mode="json") for p in result.predictions],
-                            "is_partial": True,
-                            "prediction_latency_ms": result.prediction_latency_ms,
-                        },
-                    ),
+                partial_text = pipeline_input.partial_transcript or pipeline_input.text_data or ""
+                asyncio.create_task(
+                    _process_partial_and_send(orchestrator, ws_manager, session, session_id, partial_text)
                 )
-                # Track streaming updates count for stats endpoint
-                s = session.learning_stats
-                s["streaming_updates_sent"] = s.get("streaming_updates_sent", 0) + 1
                 continue
 
-            # ── Normal pipeline ────────────────────────────────────────────
-            prev_context = session.detected_context
-            result: PipelineOutput = await orchestrator.process(pipeline_input, session)
-            await ws_manager.send(
-                session_id,
-                WebSocketMessage(
-                    type="pipeline_result",
-                    payload=result.model_dump(mode="json"),
-                ),
+            # ── Normal pipeline (non-blocking) ─────────────────────────────
+            # Fire the pipeline as a background task so the receive loop can
+            # immediately pick up the next message without waiting 3-5s.
+            asyncio.create_task(
+                _process_and_send(orchestrator, ws_manager, session, session_id, pipeline_input)
             )
-            # Track prediction latency for avg_response_time_ms
-            if result.prediction_latency_ms:
-                s = session.learning_stats
-                s["_total_latency_ms"] = s.get("_total_latency_ms", 0) + result.prediction_latency_ms
-                s["_latency_count"] = s.get("_latency_count", 0) + 1
-            # Notify client if context auto-detection changed the domain
-            if result.detected_context != prev_context:
-                s = session.learning_stats
-                s["context_switches"] = s.get("context_switches", 0) + 1
-                contexts: set = s.get("_contexts_seen", set())
-                contexts.add(result.detected_context.value)
-                s["_contexts_seen"] = contexts
-                await ws_manager.send_context_detected(session_id, result.detected_context)
-            # Pacing alert if the other person is speaking too fast
-            if result.pacing_alert:
-                await ws_manager.send(
-                    session_id,
-                    WebSocketMessage(
-                        type="pacing_alert",
-                        payload={"message": result.pacing_alert},
-                    ),
-                )
 
     except WebSocketDisconnect:
         await ws_manager.disconnect(session_id)

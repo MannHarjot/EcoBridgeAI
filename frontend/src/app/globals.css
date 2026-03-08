@@ -124,6 +124,36 @@ a {
   animation: blink 1.2s ease-in-out infinite;
 }
 
+/* ── Shimmer skeleton ────────────────────────────────────────────────────── */
+.shimmer-bg {
+  background: linear-gradient(90deg, #1E293B 25%, #2d3f55 50%, #1E293B 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── Urgency border pulse (plays once, leaves border visible) ────────────── */
+@keyframes urgency-border-fade {
+  0%   { border-left-color: rgba(244, 63, 94, 0.9); }
+  40%  { border-left-color: rgba(244, 63, 94, 0.3); }
+  70%  { border-left-color: rgba(244, 63, 94, 0.9); }
+  85%  { border-left-color: rgba(244, 63, 94, 0.3); }
+  100% { border-left-color: rgba(244, 63, 94, 0.4); }
+}
+
+.urgency-border-pulse {
+  border-left: 3px solid rgba(244, 63, 94, 0.9);
+  animation: urgency-border-fade 3s ease-out forwards;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* ── Context badge colors ────────────────────────────────────────────────── */
 .badge-medical      { background-color: rgba(129,140,248,0.2); color: #818CF8; border-color: rgba(129,140,248,0.4); }
 .badge-retail       { background-color: rgba(52,211,153,0.2);  color: #34D399; border-color: rgba(52,211,153,0.4); }

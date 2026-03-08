@@ -32,12 +32,14 @@ class Settings(BaseSettings):
     # Backboard (AI backbone)
     # ------------------------------------------------------------------
     BACKBOARD_API_KEY: str = ""
+    BACKBOARD_BASE_URL: str = "https://app.backboard.io/api"
 
     # ------------------------------------------------------------------
     # ElevenLabs (TTS)
     # ------------------------------------------------------------------
     ELEVENLABS_API_KEY: str = ""
     ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"
+    ELEVENLABS_MODEL_ID: str = "eleven_multilingual_v2"
 
     # ------------------------------------------------------------------
     # Google Cloud (STT)

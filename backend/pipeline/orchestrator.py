@@ -107,6 +107,7 @@ class PipelineOrchestrator:
             "audio_data": pipeline_input.audio_data,
             "selected_reply_id": pipeline_input.selected_reply_id,
             "voice_id": pipeline_input.voice_id,
+            "speaker": pipeline_input.speaker,
         }
 
         # ── Stage 1: Router ──────────────────────────────────────────────────
@@ -136,6 +137,11 @@ class PipelineOrchestrator:
                         stats["top_3_taps"] = stats.get("top_3_taps", 0) + 1
                     if rank < 5:
                         stats["top_5_taps"] = stats.get("top_5_taps", 0) + 1
+                    # Resolve reply text so output agent can speak it via TTS
+                    reply_text = p.get("text") if isinstance(p, dict) else getattr(p, "text", None)
+                    if reply_text:
+                        data["text_data"] = reply_text
+                        data["raw_text"] = reply_text
                     break
 
         # ── Stage 4: Reply predictions (timed for latency tracking) ────────

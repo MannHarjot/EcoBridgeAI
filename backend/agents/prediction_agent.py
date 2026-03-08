@@ -57,6 +57,13 @@ _DEFAULT_REPLIES: list[dict] = [
     {"text": "Thank you", "category": "social", "confidence": 0.65},
 ]
 
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+    "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "that", "the",
+    "this", "to", "we", "what", "when", "where", "who", "why", "with", "you", "your",
+}
+_GREETING_WORDS = {"hi", "hello", "hey", "goodmorning", "goodafternoon", "goodevening"}
+
 _PREDICTION_PROMPT = """\
 You are a communication assistant for someone using AAC (Augmentative and Alternative Communication).
 Generate 6 short, natural reply phrases the AAC user might want to say next.
@@ -109,6 +116,113 @@ def _make_predictions(raw: list[dict], stage: PredictionConfidence) -> list[dict
         for p in raw[:6]
         if p.get("text")
     ]
+
+
+def _clip_words(text: str, limit: int = 10) -> str:
+    words = text.split()
+    return " ".join(words[:limit]) if len(words) > limit else text
+
+
+def _topic_from_text(text: str) -> str:
+    words = []
+    for token in text.lower().split():
+        cleaned = re.sub(r"[^a-z0-9']", "", token)
+        if not cleaned or cleaned in _STOPWORDS or cleaned.isdigit():
+            continue
+        words.append(cleaned)
+    unique = list(dict.fromkeys(words))
+    return " ".join(unique[:2]) if unique else "this"
+
+
+def _is_greeting(text: str) -> bool:
+    compact = re.sub(r"[^a-z]", "", text.lower())
+    if compact in _GREETING_WORDS:
+        return True
+    return bool(re.search(r"\b(hi|hello|hey)\b", text.lower()))
+
+
+def _local_fallback_predictions(text: str, ctx: ConversationContext) -> list[dict]:
+    """Generate dynamic local predictions when Backboard is unavailable."""
+    text_l = text.lower()
+    topic = _topic_from_text(text)
+    greeting = _is_greeting(text)
+    is_question = "?" in text or bool(
+        re.match(r"^(what|why|how|when|where|who|can|could|would|should|do|does|did|is|are)\b", text_l.strip())
+    )
+
+    if greeting:
+        raw = [
+            {"text": "Hi, I'm good. How are you?", "category": "social", "confidence": 0.95},
+            {"text": "Nice to see you", "category": "social", "confidence": 0.90},
+            {"text": "I'm doing well, thanks", "category": "social", "confidence": 0.88},
+            {"text": "Can you speak a little slower?", "category": "request", "confidence": 0.84},
+            {"text": "Could you repeat that once?", "category": "request", "confidence": 0.80},
+            {"text": "I need a short break", "category": "help", "confidence": 0.74},
+        ]
+        return raw
+
+    context_templates: dict[ConversationContext, tuple[str, str]] = {
+        ConversationContext.MEDICAL: (
+            f"Is {topic} serious?",
+            f"I need help with {topic}",
+        ),
+        ConversationContext.RETAIL: (
+            f"What is the price for {topic}?",
+            f"Do you have another option for {topic}?",
+        ),
+        ConversationContext.EMERGENCY: (
+            "I need immediate help now",
+            f"This is urgent about {topic}",
+        ),
+        ConversationContext.PROFESSIONAL: (
+            f"Can we discuss {topic} next?",
+            f"I need details about {topic}",
+        ),
+        ConversationContext.CASUAL: (
+            f"Tell me more about {topic}",
+            f"I understand, it is about {topic}",
+        ),
+        ConversationContext.UNKNOWN: (
+            f"Can you explain {topic}?",
+            f"I need more details on {topic}",
+        ),
+    }
+    c1, c2 = context_templates.get(ctx, context_templates[ConversationContext.UNKNOWN])
+
+    if topic in {"this", "that"}:
+        c1, c2 = (
+            "Can you explain that clearly?",
+            "I need a bit more detail",
+        )
+
+    if is_question:
+        alt1, alt2 = "Yes, that works", "No, not right now"
+    else:
+        alt1, alt2 = "I understand, thank you", "Can you repeat that slowly?"
+
+    raw: list[dict] = [
+        {"text": _clip_words(c1), "category": "question", "confidence": 0.90},
+        {"text": _clip_words(c2), "category": "request", "confidence": 0.86},
+        {"text": _clip_words(alt1), "category": "confirmation", "confidence": 0.82},
+        {"text": _clip_words(alt2), "category": "request", "confidence": 0.78},
+        {"text": _clip_words(f"What should I do about {topic}?"), "category": "question", "confidence": 0.74},
+        {"text": "I need a short break", "category": "help", "confidence": 0.70},
+    ]
+    # Keep unique phrases and ensure exactly 6 outputs.
+    seen: set[str] = set()
+    unique_raw = []
+    for item in raw:
+        t = item["text"].strip()
+        if t and t not in seen:
+            seen.add(t)
+            unique_raw.append(item)
+    for item in _DEFAULT_REPLIES:
+        if len(unique_raw) >= 6:
+            break
+        if item["text"] not in seen:
+            unique_raw.append(item)
+            seen.add(item["text"])
+    return unique_raw[:6]
 
 
 class PredictionAgent(BaseAgent):
@@ -188,7 +302,7 @@ class PredictionAgent(BaseAgent):
                 logger.warning("PredictionAgent Backboard call failed: %s", exc)
 
         if not raw_preds:
-            raw_preds = _CONTEXT_REPLIES.get(detected_context, _DEFAULT_REPLIES)
+            raw_preds = _local_fallback_predictions(text, detected_context)
 
         input_data["predictions"] = _make_predictions(raw_preds, PredictionConfidence.CONFIDENT)
         return input_data
@@ -245,7 +359,7 @@ class PredictionAgent(BaseAgent):
         raw_preds: list[dict] = []
         try:
             bb_sid = await self._ensure_bb_session(session)
-            response = await self.backboard.send_message(
+            response = await self.backboard.send_message_fast(
                 bb_sid, prompt, agent_name="reply_prediction"
             )
             raw_preds = _parse_predictions(response)
@@ -253,6 +367,6 @@ class PredictionAgent(BaseAgent):
             logger.warning("PredictionAgent partial Backboard call failed: %s", exc)
 
         if not raw_preds:
-            raw_preds = _CONTEXT_REPLIES.get(detected_context, _DEFAULT_REPLIES)
+            raw_preds = _local_fallback_predictions(partial_text, detected_context)
 
         return _make_predictions(raw_preds, stage)

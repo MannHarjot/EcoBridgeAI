@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import type { SessionStats } from '@/lib/types';
 
 interface HistoryEntry {
   session_id: string;
@@ -30,7 +29,7 @@ export default function HistoryPage() {
   }, []);
 
   return (
-    <main className="flex flex-col h-screen bg-navy">
+    <main className="flex flex-col flex-1 min-h-0 bg-navy">
       {/* Header */}
       <header className="flex items-center gap-4 px-4 py-4 border-b border-slate-700/50 bg-slate-900/80">
         <Link

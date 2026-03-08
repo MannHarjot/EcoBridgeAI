@@ -117,7 +117,7 @@ class OutputAgent(BaseAgent):
         transcript: TranscriptMessage | None = None
         if raw_text:
             transcript = TranscriptMessage(
-                speaker="other",
+                speaker=input_data.get("speaker", "other"),
                 raw_text=raw_text,
                 simplified_text=simplified,
                 intent=intent,

@@ -16,6 +16,7 @@ import type { ImpairmentMode, UserPreferences } from '@/lib/types';
 const DEFAULT_PREFERENCES: UserPreferences = {
   user_id: 'local_user',
   preferred_mode: 'dual_impairment' as ImpairmentMode,
+  output_mode: 'text_and_voice',
   voice_id: process.env.NEXT_PUBLIC_DEFAULT_VOICE_ID ?? '21m00Tcm4TlvDq8ikWAM',
   favourite_phrases: [],
   emergency_info: {},
@@ -45,8 +46,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_PREFERENCES);
 
   useEffect(() => {
-    // Generate a stable session ID using the Web Crypto API
-    setSessionId(crypto.randomUUID());
+    // Generate a stable session ID; fall back when randomUUID is unavailable.
+    const generatedSessionId =
+      globalThis.crypto?.randomUUID?.() ??
+      `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    setSessionId(generatedSessionId);
 
     // Load preferences: localStorage first, then try API
     let loaded: UserPreferences = DEFAULT_PREFERENCES;

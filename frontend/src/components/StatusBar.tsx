@@ -11,6 +11,10 @@ interface Props {
   currentMode: ImpairmentMode;
   emergencyActive?: boolean;
   latencyMs?: number;
+  isListening?: boolean;
+  isSpeaking?: boolean;
+  demoMode?: boolean;
+  onBrandTap?: () => void;
 }
 
 export default function StatusBar({
@@ -19,6 +23,10 @@ export default function StatusBar({
   currentMode,
   emergencyActive = false,
   latencyMs = 0,
+  isListening = false,
+  isSpeaking = false,
+  demoMode = false,
+  onBrandTap,
 }: Props) {
   return (
     <header
@@ -32,15 +40,31 @@ export default function StatusBar({
     >
       {/* Left: app name + connection dot */}
       <div className="flex items-center gap-3">
-        <Link
-          href="/"
-          className="flex items-center gap-2 min-h-[0] focus-visible:ring-2 focus-visible:ring-amber-400 rounded-lg"
+        <div
+          onClick={onBrandTap}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && onBrandTap?.()}
+          aria-label="EchoBridge AI home"
+          className="cursor-pointer"
         >
-          <span className="text-xl font-bold text-warm-white tracking-tight">
-            EchoBridge
+          <Link
+            href="/"
+            className="flex items-center gap-2 min-h-[0] focus-visible:ring-2 focus-visible:ring-amber-400 rounded-lg pointer-events-none"
+            tabIndex={-1}
+          >
+            <span className="text-xl font-bold text-warm-white tracking-tight">
+              EchoBridge
+            </span>
+            <span className="text-xl font-bold text-amber-400">AI</span>
+          </Link>
+        </div>
+
+        {demoMode && (
+          <span className="px-1.5 py-0.5 text-xs font-bold bg-amber-500 text-black rounded">
+            DEMO
           </span>
-          <span className="text-xl font-bold text-amber-400">AI</span>
-        </Link>
+        )}
 
         {/* Connection indicator */}
         <div className="flex items-center gap-1.5" title={connected ? 'Connected' : 'Reconnecting…'}>
@@ -48,7 +72,7 @@ export default function StatusBar({
             className={[
               'w-2.5 h-2.5 rounded-full',
               connected
-                ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)] animate-pulse'
                 : 'bg-amber-400 animate-blink',
             ].join(' ')}
           />
@@ -71,8 +95,24 @@ export default function StatusBar({
         <ModeIndicator mode={currentMode} compact />
       </div>
 
-      {/* Right: nav icons */}
-      <div className="flex items-center gap-1">
+      {/* Right: mic ring, speaking, nav icons */}
+      <div className="flex items-center gap-2">
+        {/* Mic ring indicator */}
+        {isListening && (
+          <div className="relative flex items-center justify-center w-6 h-6">
+            <div className="absolute h-5 w-5 rounded-full border border-rose-400/60 animate-ring-expand" />
+            <div className="h-2 w-2 rounded-full bg-rose-500" />
+          </div>
+        )}
+
+        {/* Speaking indicator */}
+        {isSpeaking && (
+          <span className="animate-slide-in-right text-xs font-medium text-emerald-400 flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            Speaking
+          </span>
+        )}
+
         <Link
           href="/history"
           className="p-2 rounded-lg text-slate-400 hover:text-warm-white hover:bg-slate-800/60 transition-colors min-h-[0]"

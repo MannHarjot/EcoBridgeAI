@@ -48,9 +48,17 @@ module.exports = {
         '4xl': ['3rem',     { lineHeight: '1.1' }], // 48px
       },
       animation: {
-        'tile-in':      'tile-in 200ms ease-out forwards',
-        'pulse-urgent': 'pulse-urgent 1.5s ease-in-out infinite',
-        'slide-up':     'slide-up 300ms ease-out forwards',
+        'tile-in':        'tile-in 200ms ease-out forwards',
+        'pulse-urgent':   'pulse-urgent 1.5s ease-in-out infinite',
+        'slide-up':       'slide-up 300ms ease-out forwards',
+        'shimmer':        'shimmer 1.5s ease-in-out infinite',
+        'slide-down':     'slide-down 300ms ease-out both',
+        'fade-in':        'fade-in 200ms ease-out both',
+        'msg-left':       'msg-left 200ms ease-out both',
+        'msg-right':      'msg-right 200ms ease-out both',
+        'idle-pulse':     'idle-pulse 3s ease-in-out infinite',
+        'ring-expand':    'ring-expand 1.2s ease-out infinite',
+        'slide-in-right': 'slide-in-right 200ms ease-out both',
       },
       keyframes: {
         'tile-in': {
@@ -64,6 +72,38 @@ module.exports = {
         'slide-up': {
           from: { opacity: '0', transform: 'translateY(12px)' },
           to:   { opacity: '1', transform: 'translateY(0)' },
+        },
+        'shimmer': {
+          '0%':   { backgroundPosition: '-200% 0' },
+          '100%': { backgroundPosition: '200% 0' },
+        },
+        'slide-down': {
+          from: { opacity: '0', transform: 'translateY(-10px)' },
+          to:   { opacity: '1', transform: 'translateY(0)' },
+        },
+        'fade-in': {
+          from: { opacity: '0' },
+          to:   { opacity: '1' },
+        },
+        'msg-left': {
+          from: { opacity: '0', transform: 'translateX(-16px)' },
+          to:   { opacity: '1', transform: 'translateX(0)' },
+        },
+        'msg-right': {
+          from: { opacity: '0', transform: 'translateX(16px)' },
+          to:   { opacity: '1', transform: 'translateX(0)' },
+        },
+        'idle-pulse': {
+          '0%, 100%': { transform: 'scale(1)' },
+          '50%':       { transform: 'scale(1.04)' },
+        },
+        'ring-expand': {
+          '0%':   { transform: 'scale(1)',   opacity: '0.7' },
+          '100%': { transform: 'scale(1.8)', opacity: '0' },
+        },
+        'slide-in-right': {
+          from: { opacity: '0', transform: 'translateX(8px)' },
+          to:   { opacity: '1', transform: 'translateX(0)' },
         },
       },
       minHeight: {

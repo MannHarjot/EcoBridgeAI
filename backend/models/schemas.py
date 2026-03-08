@@ -146,6 +146,7 @@ class PipelineInput(BaseModel):
     selected_reply_id: Optional[str] = None
     voice_id: Optional[str] = None
     partial_transcript: Optional[str] = None  # streaming: frontend sends partial speech
+    speaker: str = 'other'  # 'user' = our user typing/speaking, 'other' = other person's message
 
 
 class PipelineOutput(BaseModel):

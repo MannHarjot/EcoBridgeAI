@@ -9,6 +9,7 @@ interface Props {
   onMicStop: () => void;
   partialTranscript?: string;
   disabled?: boolean;
+  showMic?: boolean;
 }
 
 export default function TextInput({
@@ -18,6 +19,7 @@ export default function TextInput({
   onMicStop,
   partialTranscript = '',
   disabled = false,
+  showMic = true,
 }: Props) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -56,7 +58,6 @@ export default function TextInput({
         setValue('');
       }
     } else {
-      setValue('');
       onMicStart();
     }
   }, [isListening, onMicStart, onMicStop, value, onSend]);
@@ -102,8 +103,8 @@ export default function TextInput({
         }}
       />
 
-      {/* Mic button */}
-      <button
+      {/* Mic button — only shown in hearing mode (user can speak) */}
+      {showMic && <button
         onClick={handleMicToggle}
         disabled={disabled}
         aria-label={isListening ? 'Stop microphone' : 'Start microphone'}
@@ -128,7 +129,7 @@ export default function TextInput({
             <path d="M5.5 9.643a.75.75 0 00-1.5 0V10c0 3.06 2.29 5.585 5.25 5.954V17.5h-1.5a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5H10.5v-1.546A6.001 6.001 0 0016 10v-.357a.75.75 0 00-1.5 0V10a4.5 4.5 0 01-9 0v-.357z" />
           </svg>
         )}
-      </button>
+      </button>}
 
       {/* Send button */}
       <button

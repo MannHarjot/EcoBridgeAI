@@ -53,20 +53,27 @@ export default function TranscriptPanel({ messages }: Props) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+    <div
+      role="log"
+      aria-label="Conversation transcript"
+      aria-live="polite"
+      aria-relevant="additions text"
+      className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
+    >
       {messages.map((msg) => {
         const isUser = msg.speaker === 'user';
+        const isUrgent = !isUser && (msg.urgency === 'high' || msg.urgency === 'emergency');
 
         return (
           <div
             key={msg.id}
-            className={`flex animate-slide-up ${isUser ? 'justify-end' : 'justify-start'}`}
+            className={`flex ${isUser ? 'animate-msg-right justify-end' : 'animate-msg-left justify-start'}`}
           >
             <div
               className={`max-w-[85%] rounded-2xl px-4 py-3 space-y-1 ${
                 isUser
                   ? 'bg-indigo-600/80 text-white rounded-br-sm'
-                  : 'bg-slate-800 text-warm-white rounded-bl-sm border border-slate-700/60'
+                  : `bg-slate-800 text-warm-white rounded-bl-sm border border-slate-700/60${isUrgent ? ' urgency-border-pulse' : ''}`
               }`}
             >
               {/* Speaker label */}
@@ -82,7 +89,7 @@ export default function TranscriptPanel({ messages }: Props) {
 
               {/* Simplified text — shown if different from raw */}
               {msg.simplified_text && msg.simplified_text !== msg.raw_text && (
-                <div className="mt-1 pt-1 border-t border-white/10">
+                <div className="mt-1 pt-1 border-t border-white/10 animate-fade-in" style={{ animationDelay: '100ms' }}>
                   <p className="text-base text-slate-300 italic">
                     <span className="text-xs not-italic font-medium opacity-50 mr-1">
                       Simplified:

@@ -18,12 +18,13 @@ class ElevenLabsClient:
     impairments who need audio output for others in the conversation.
     """
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, model_id: str = "eleven_multilingual_v2") -> None:
         self._client = httpx.AsyncClient(
             base_url=_BASE,
             headers={"xi-api-key": api_key},
             timeout=30.0,
         )
+        self._model_id = model_id
 
     async def text_to_speech(self, text: str, voice_id: str) -> bytes:
         """Synthesise speech from text using a specified ElevenLabs voice.
@@ -40,7 +41,7 @@ class ElevenLabsClient:
             headers={"Accept": "audio/mpeg"},
             json={
                 "text": text,
-                "model_id": "eleven_monolingual_v1",
+                "model_id": self._model_id,
                 "voice_settings": {
                     "stability": 0.5,
                     "similarity_boost": 0.75,
