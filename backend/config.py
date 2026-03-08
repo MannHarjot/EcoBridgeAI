@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     AUTH0_DOMAIN: str = ""
     AUTH0_AUDIENCE: str = ""
 
+    # ------------------------------------------------------------------
+    # Streaming predictions
+    # ------------------------------------------------------------------
+    STREAMING_PREDICTION_INTERVAL_MS: int = 500  # how often to regenerate predictions during partial speech
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: object) -> list[str]:
