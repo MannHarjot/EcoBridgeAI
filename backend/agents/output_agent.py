@@ -45,17 +45,18 @@ class OutputAgent(BaseAgent):
     """Assembles all upstream agent results into a final PipelineOutput.
 
     Responsibilities:
+    - Optionally generate TTS audio via ElevenLabs for VOICE_ONLY / TEXT_AND_VOICE modes
     - Build a TranscriptMessage from the incoming text and append it to the session
-    - Respect ``output_mode`` routing flags from the RouterAgent:
-        TEXT_ONLY      → voice_audio_url stays None
-        VOICE_ONLY     → simplified_text is still populated (accessibility fallback)
-        TEXT_AND_VOICE → both populated when TTS runs
-        VISUAL_ONLY    → same as TEXT_AND_VOICE; frontend renders large visual layout
+    - Optionally persist the message to Supabase
     - Pack predictions, intent, urgency, and emergency flag into the output
     """
 
     name = "output_composer"
     description = "Packages all pipeline results into a structured PipelineOutput."
+
+    def __init__(self, elevenlabs=None, supabase=None) -> None:
+        self.elevenlabs = elevenlabs
+        self.supabase = supabase
 
     async def process(self, input_data: dict, session: SessionState) -> dict:
         """Compose the final PipelineOutput from accumulated pipeline state.
@@ -85,7 +86,34 @@ class OutputAgent(BaseAgent):
         except ValueError:
             mode = ImpairmentMode.DUAL_IMPAIRMENT
 
-        # Build and append the transcript message
+        # ── TTS (voice output) ────────────────────────────────────────────────
+        voice_audio_url: str | None = input_data.get("voice_audio_url")
+        if (
+            not voice_audio_url
+            and self.elevenlabs
+            and output_mode in (OutputMode.VOICE_ONLY, OutputMode.TEXT_AND_VOICE)
+            and input_data.get("run_tts")
+        ):
+            tts_text = simplified or raw_text
+            if tts_text:
+                try:
+                    import base64
+
+                    from config import settings
+
+                    voice_id = input_data.get("voice_id") or settings.ELEVENLABS_VOICE_ID
+                    audio_bytes = await self.elevenlabs.text_to_speech(tts_text, voice_id)
+                    b64 = base64.b64encode(audio_bytes).decode()
+                    voice_audio_url = f"data:audio/mpeg;base64,{b64}"
+                    logger.debug("TTS generated %d bytes", len(audio_bytes))
+                except Exception as exc:
+                    logger.warning("OutputAgent TTS failed: %s", exc)
+
+        # TEXT_ONLY mode — never expose voice URL regardless of TTS result
+        if output_mode == OutputMode.TEXT_ONLY:
+            voice_audio_url = None
+
+        # ── Build and append transcript message ───────────────────────────────
         transcript: TranscriptMessage | None = None
         if raw_text:
             transcript = TranscriptMessage(
@@ -104,10 +132,14 @@ class OutputAgent(BaseAgent):
                 len(session.messages),
             )
 
-        # Respect output_mode — only expose voice URL if a TTS stage produced one
-        voice_audio_url: str | None = input_data.get("voice_audio_url")
-        if output_mode == OutputMode.TEXT_ONLY:
-            voice_audio_url = None
+        # ── Supabase persistence ──────────────────────────────────────────────
+        if self.supabase and transcript:
+            try:
+                await self.supabase.save_message(
+                    session.session_id, transcript.model_dump(mode="json")
+                )
+            except Exception as exc:
+                logger.warning("OutputAgent Supabase save failed: %s", exc)
 
         predictions = [
             PredictedReply(**p) if isinstance(p, dict) else p
