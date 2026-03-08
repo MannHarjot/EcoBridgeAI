@@ -1,0 +1,133 @@
+/* Atkinson Hyperlegible — designed specifically for legibility and accessibility */
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Color system ────────────────────────────────────────────────────────── */
+:root {
+  --navy:       #0F172A;
+  --warm-white: #F8FAFC;
+  --amber:      #F59E0B;
+  --emerald:    #10B981;
+  --rose:       #F43F5E;
+
+  --slate-700: #334155;
+  --slate-800: #1E293B;
+  --slate-900: #0F172A;
+
+  --context-medical:      #818CF8; /* indigo */
+  --context-retail:       #34D399; /* emerald */
+  --context-emergency:    #F43F5E; /* rose */
+  --context-casual:       #60A5FA; /* blue */
+  --context-professional: #A78BFA; /* violet */
+  --context-unknown:      #94A3B8; /* slate */
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: 'Atkinson Hyperlegible', system-ui, sans-serif;
+  background-color: var(--navy);
+  color: var(--warm-white);
+  font-size: 18px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Prevent zoom on input focus on iOS */
+  touch-action: manipulation;
+}
+
+/* Enforce minimum 16px font size throughout */
+* {
+  font-size: max(1rem, inherit);
+}
+
+/* ── Accessibility — thick, visible focus outline ────────────────────────── */
+:focus-visible {
+  outline: 4px solid var(--amber);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* Remove focus outline on mouse click, keep for keyboard */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── Touch targets — minimum 48px ────────────────────────────────────────── */
+button,
+[role="button"],
+input,
+select,
+textarea,
+a {
+  min-height: 48px;
+}
+
+/* ── Scrollbar styling ───────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #1E293B;
+}
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748B;
+}
+
+/* ── Utility classes ─────────────────────────────────────────────────────── */
+.animate-tile-in {
+  animation: tile-in 200ms ease-out both;
+}
+
+.animate-pulse-urgent {
+  animation: pulse-urgent 1.5s ease-in-out infinite;
+}
+
+.animate-slide-up {
+  animation: slide-up 300ms ease-out both;
+}
+
+/* ── Keyframes (also defined in tailwind.config.js for className use) ─────── */
+@keyframes tile-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-urgent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.45); }
+  50%       { box-shadow: 0 0 0 10px rgba(244, 63, 94, 0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+.animate-blink {
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+/* ── Context badge colors ────────────────────────────────────────────────── */
+.badge-medical      { background-color: rgba(129,140,248,0.2); color: #818CF8; border-color: rgba(129,140,248,0.4); }
+.badge-retail       { background-color: rgba(52,211,153,0.2);  color: #34D399; border-color: rgba(52,211,153,0.4); }
+.badge-emergency    { background-color: rgba(244,63,94,0.2);   color: #F43F5E; border-color: rgba(244,63,94,0.4); }
+.badge-casual       { background-color: rgba(96,165,250,0.2);  color: #60A5FA; border-color: rgba(96,165,250,0.4); }
+.badge-professional { background-color: rgba(167,139,250,0.2); color: #A78BFA; border-color: rgba(167,139,250,0.4); }
+.badge-unknown      { background-color: rgba(148,163,184,0.1); color: #94A3B8; border-color: rgba(148,163,184,0.3); }

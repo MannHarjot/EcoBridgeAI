@@ -14,9 +14,12 @@ Demonstrates:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import time
+
+logger = logging.getLogger(__name__)
 
 # Ensure backend/ is on the path when run directly
 sys.path.insert(0, os.path.dirname(__file__))
