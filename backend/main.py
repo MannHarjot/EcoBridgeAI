@@ -55,11 +55,6 @@ def _normalize_input(raw: dict) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise all service clients and agents on startup."""
-    from agents.context_agent import ContextAgent
-    from agents.output_agent import OutputAgent
-    from agents.prediction_agent import PredictionAgent
-    from agents.router_agent import RouterAgent
-    from agents.speech_agent import SpeechAgent
     from pipeline.orchestrator import PipelineOrchestrator
     from services.backboard import BackboardClient
     from services.cloudinary_service import CloudinaryClient
@@ -83,25 +78,13 @@ async def lifespan(app: FastAPI):
     )
     supabase = SupabaseClient(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-    # ── Agents ───────────────────────────────────────────────────────────────
-    router = RouterAgent()
-    speech = SpeechAgent()
-    context = ContextAgent()
-    prediction = PredictionAgent()
-    output = OutputAgent()
-
-    # ── Orchestrator & WebSocket manager ────────────────────────────────────
+    # ── Orchestrator (creates agents internally with service deps) ───────────
     orchestrator = PipelineOrchestrator(
-        router=router,
-        speech=speech,
-        context=context,
-        prediction=prediction,
-        output=output,
+        backboard=backboard,
         elevenlabs=elevenlabs,
         google_stt=google_stt,
-        backboard=backboard,
-        cloudinary=cloudinary,
         supabase=supabase,
+        cloudinary=cloudinary,
     )
     ws_manager = ConnectionManager()
 
